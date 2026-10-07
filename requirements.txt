@@ -1,0 +1,9 @@
+torch
+torchvision
+numpy
+pyyaml
+psutil
+matplotlib
+scikit-learn
+pytest
+pyflakes

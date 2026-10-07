@@ -1,0 +1,8 @@
+# Local experiment artifacts
+results/
+
+# Internal development documentation
+BUILDER_GUIDE.md
+INTERVIEW_GUIDE.md
+CommScope_Master_Build_Spec.md
+DECISIONS.md
