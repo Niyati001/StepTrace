@@ -1,165 +1,309 @@
-# StepTrace | Distributed Training Performance Diagnosis
+<div align="center">
 
-> **Measure → Understand → Inject → Diagnose → Validate**
+# Regime-Aware Investment Research Copilot
 
-StepTrace is an auditable PyTorch distributed-training performance testbed. It measures where a DDP training step spends its time, injects controlled faults with known ground truth, diagnoses the resulting signature with frozen rule-based logic, and evaluates that logic on data it never saw during rule development.
+### A desk-style multi-agent financial ML system that detects hidden market regimes, routes predictions through specialized expert classifiers, and resolves conflicting signals — inspired by how quantitative research desks combine regime, risk, macro, and forecasting signals.
 
-![StepTrace architecture](docs/assets/architecture.png)
+<br/>
 
-## Scope
+-> https://regime-aware-investment-copilot.streamlit.app/
 
-All GPU evidence was measured on **one node with 2× NVIDIA Tesla T4 GPUs in Kaggle**. Collectives used NCCL `SHM/direct` transport over the host/PCIe path; topology was `PHB` and there was no NVLink.
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
+![scikit-learn](https://img.shields.io/badge/scikit--learn-ML-F7931E?style=for-the-badge&logo=scikit-learn&logoColor=white)
+![Plotly](https://img.shields.io/badge/Plotly-Charts-3F4F75?style=for-the-badge&logo=plotly&logoColor=white)
 
-This is **not** a multi-node network-fabric study. There are no InfiniBand, RoCE, NIC, switch, or production-cluster measurements. Communication bandwidth degradation is explicitly **emulated** unless stated otherwise. Reported performance numbers are specific to the recorded environment.
+<br/>
 
-## The problem
+<!-- SCREENSHOT: Full dashboard overview — paste your Desk View screenshot here -->
+> ![Dashboard Overview](assets/dashboard_overview.png)
 
-A slow distributed step does not tell you *why* it is slow.
+</div>
 
-| Observable symptom | Possible cause | What to investigate |
-|---|---|---|
-| Collective communication reaches the critical path | Communication | DDP buckets, transport, overlap |
-| One rank finishes compute late | Straggler | Slow rank / workload imbalance |
-| GPU waits for the next batch | Data stall | Loader workers, preprocessing, prefetch |
-| Several signatures appear together | Ambiguous contention | Common-mode CPU/input effects |
+---
 
-Because DDP is synchronous, a straggler or input stall can surface as waiting around collectives and look like a communication problem. StepTrace measures those signatures separately—and reports when they are not cleanly separable.
+## The Problem This Solves
 
-## What StepTrace does
+A single ML model trained across all market conditions is a structural mistake.
 
-- Measures per-rank step timing with **CUDA events**.
-- Timestamps DDP gradient buckets with a **communication hook**.
-- Cross-checks timing with `torch.profiler`.
-- Uses a paired `no_sync` ablation as an independent communication-exposure estimate.
-- Injects controlled **communication, straggler, and data-pipeline faults** with ground truth.
-- Builds thresholds from a healthy reference collected in the **same GPU session**.
-- Uses an explicit rule-based diagnoser; **no ML or LLM is used for diagnosis**.
-- Freezes and hashes the rules before held-out scoring.
-- Separates **fault manifestation** from diagnosis.
-- Records provenance and verifies ingested evidence with SHA256 manifests.
+Bull markets, bear markets, and crisis periods have fundamentally different volatility profiles, momentum dynamics, and return distributions. Training one model across all three forces it to average out signal that only exists in specific regimes — and dilutes performance in all of them.
 
-## Key result
+This system solves that with a three-layer approach:
 
-### 73.9% held-out accuracy — 17 / 23
+1. **Detect the hidden regime** — HMM identifies whether the market is currently in a Bull, Bear, or Crisis state
+2. **Route to specialists** — Soft-Gated Mixture of Experts weights regime-specialized classifiers dynamically
+3. **Resolve conflicts explicitly** — A supervisor agent reconciles when structural regime and momentum signal disagree, with transparent reasoning and regime-conditional position scaling
 
-![Held-out confusion matrix](docs/assets/confusion_matrix.png)
+---
 
-| Truth | Correct | Recall |
-|---|---:|---:|
-| HEALTHY | 5 / 5 | 1.00 |
-| COMMUNICATION | 4 / 6 | 0.67 |
-| STRAGGLER | 5 / 6 | 0.83 |
-| DATA_STALL | 3 / 6 | 0.50 |
+## Results
 
-With only two launches per fault arm, per-class statistics have limited statistical power.
+<div align="center">
 
-The held-out set was intentionally difficult: **9/9** healthy/design-mechanism controls were correct, while **8/14** mechanisms not seen before the freeze were correct. That gap is part of the result.
+| Metric | Value |
+|:---|:---:|
+| Best model | Random Forest + Soft-Gated MoE |
+| **Walk-forward Sharpe (all-asset)** | **2.329** |
+| Baseline Sharpe (no regime routing) | 1.917 |
+| **Net Sharpe after 10 bps transaction costs** | **2.298** |
+| Buy-and-hold Sharpe | 1.732 |
+| **Strategy max drawdown** | **-5.02%** |
+| Buy-and-hold max drawdown | -10.85% |
+| Bull regime directional accuracy | 64.7% |
 
-## Where a healthy DDP step goes
+</div>
 
-![Healthy step](docs/assets/healthy_step.png)
+> All results from walk-forward validation. No look-ahead bias. Transaction costs and volatility-based position sizing applied throughout.
 
-For the held-out reference session, a healthy ResNet-18 FP32 batch-32/GPU step had a median step time of **37.3 ms**, with approximately **4 ms of exposed communication on the critical path**.
+### Regime Persistence
 
-## Why the diagnoser missed 6 runs
+The Hidden Markov Model identified highly persistent market states:
 
-![Failure analysis](docs/assets/failure_analysis.png)
+| Regime | Self-Transition Probability |
+|:---|:---:|
+| Bull | 96.9% |
+| Bear | 98.3% |
+| Crisis | 96.3% |
 
-The misses were not discarded or retuned away.
+Regimes are not noise — they are structurally stable. This persistence is what justifies routing predictions to regime-specialized experts rather than using a single global forecasting model. A regime, once entered, is statistically likely to continue.
 
-**Severity boundary — 3 misses.** Two `comm_emulated_bw_8GBps` runs and one low-severity compute-straggler run fell close to the frozen detection boundary. The communication signal was elevated, but too little of the injected delay became exposed critical-path time to satisfy the practical detection floor consistently.
+---
 
-**Observable ambiguity — 3 misses.** CPU-heavy loader preprocessing competed with the four available vCPUs. That increased both input wait and per-rank compute unevenly. One physical cause therefore produced both a **DATA_STALL** and **STRAGGLER** signature. The frozen rule selected the larger observed effect.
+## System Architecture
 
-These are findings about the detector, not reasons to change the held-out score.
-
-## Measurement model
-
-| Metric | Meaning |
-|---|---|
-| `step_time_ms` | End-to-end measured training step |
-| `data_wait_ms` | GPU-side wait for batch delivery / H2D |
-| `compute_time_ms` | Accumulation + forward + backward-to-last-gradient + optimizer |
-| `communication_time_ms` | DDP all-reduce busy time |
-| `exposed_communication_time_ms` | Communication on the critical path |
-| `ddp_finalize_ms` | Post-communication DDP work |
-| `compute_skew_ms` | Cross-rank compute imbalance |
-
-Two independent communication-exposure views are retained: a critical-path timeline and paired `DDP − no_sync` ablation. A profiler window provides an additional kernel-level cross-check.
-
-## Diagnosis
-
-The frozen v1 diagnoser uses robust-z thresholds against a same-session healthy reference:
-
-- **DATA_STALL** → elevated input wait
-- **STRAGGLER** → elevated cross-rank compute skew
-- **COMMUNICATION** → elevated exposed communication
-- **HEALTHY** → none elevated
-
-A signal must satisfy both its robust z-score and practical-effect threshold. When multiple causes are elevated, the primary verdict is the larger estimated critical-path effect; secondary causes remain evidence.
-
-The rules were frozen before held-out scoring and were not refit after seeing the held-out failures.
-
-## Experimental integrity
-
-- Same-session healthy references account for variation in cloud GPU performance.
-- Rules are frozen, hash-recorded, and tied to Git provenance.
-- Every run records configuration, environment, seed, timestamp, Git state, and fault ground truth.
-- Fault manifestation is checked independently from diagnosis.
-- Raw evidence is ingested with SHA256 verification.
-- Held-out failures were analyzed independently without rescoring or changing the frozen rules.
-- CPU/Gloo tests provide GPU-independent regression coverage.
-
-## What this project does **not** claim
-
-StepTrace does **not** claim:
-
-- multi-node performance results;
-- InfiniBand/RoCE/NVSwitch/NVLink performance;
-- production-scale training behavior;
-- generalization to other GPU families or arbitrary models;
-- that emulated bandwidth delay represents a real slow network link;
-- statistically strong confidence intervals from two launches per held-out arm;
-- GPU optimization speedups.
-
-An optimization layer exists and is CPU-tested, but **no GPU optimization campaign was run**, so no speed-up is reported.
-
-## Repository
-
-```text
-workloads/    instrumented DDP workload, models, data/config schema
-instrument/   CUDA timing, communication hooks, timelines, profiler, provenance
-faults/       fault taxonomy, runtime injectors, manifestation checks
-diagnose/     features, thresholds, rules, evaluation, freeze logic
-analysis/     statistics, validation gates, pilot selection, plots
-optimize/     tuning/validation framework (CPU-tested)
-scripts/      experiment and validation tooling
-configs/      baseline, pilot, and public design campaign configurations
-tests/        CPU-only unit and Gloo integration tests
+```
+                     ┌───────────────────────────────┐
+                     │         CONTROL PANEL         │
+                     │  Asset · Cost · Signal · Shock│
+                     └──────────────┬────────────────┘
+                                    │
+                     ┌──────────────▼────────────────┐
+                     │         REGIME AGENT          │
+                     │   HMM → Bull / Bear / Crisis  │
+                     │   Posterior state probability │
+                     └──────────────┬────────────────┘
+                                    │
+         ┌──────────────────────────┼─────────────────────────┐
+         │                          │                         │
+┌────────▼────────┐      ┌──────────▼──────────┐    ┌────────▼────────┐
+│   QUANT AGENT   │      │     RISK AGENT      │    │   MACRO AGENT   │
+│ Soft-Gated MoE  │      │ Vol-based sizing    │    │ FRED: FEDFUNDS  │
+│ RF/XGB/LightGBM │      │ Regime scalar       │    │ T10Y2Y, HY Sprd │
+│ Up probability  │      │ VaR · Drawdown      │    │ India VIX / RBI │
+└────────┬────────┘      └──────────┬──────────┘    └────────┬────────┘
+         │                          │                        │
+         └──────────────────────────▼────────────────────────┘
+                                    │
+                     ┌──────────────▼─────────────────┐
+                     │       SUPERVISOR AGENT         │
+                     │  Explicit conflict resolution  │
+                     │  Bear + Bullish → 40% exposure │
+                     │  Regime-conditional override   │
+                     └──────────────┬─────────────────┘
+                                    │
+         ┌──────────────────────────┼─────────────────────────┐
+         │                          │                         │
+┌────────▼─────────┐      ┌─────────▼───────────┐    ┌────────▼─────────┐
+│ HIST. ANALOGS    │      │   RESEARCH NOTE     │    │ MODEL DIAGNOSTICS│
+│ Cosine similarity│      │ Structured synthesis│    │ Walk-fwd tracker │
+│ Fwd return dist  │      │ from agent inputs   │    │ Model leaderboard│
+└──────────────────┘      └─────────────────────┘    └──────────────────┘
 ```
 
-Generated experiment evidence and internal development guides are intentionally **not part of the public repository**.
+---
 
-## Quickstart
+## Dashboard
 
-### CPU development
+### Desk View — Live Agent Status + Conflict Resolution
+
+<!-- SCREENSHOT: Desk View tab — showing Bear regime, Bullish quant, 40% supervisor exposure -->
+![Dashboard Overview](assets/dashboard_overview.png)
+
+The headline feature. When the Regime Agent and Quant Agent disagree — for example, HMM detects Bear with 99.9% confidence while the MoE classifier gives a Bullish signal — the Supervisor Agent doesn't average them. It applies explicit logic:
+
+```python
+("Bear", "Bullish"): {
+    "stance":            "Cautiously Neutral",
+    "reasoning":         "Regime and momentum signals disagree. "
+                         "Reduce size and wait for confirmation.",
+    "exposure_override": 0.40   # down from raw 100%
+}
+```
+
+Every decision is shown with its reasoning. No black boxes.
+
+---
+
+### Research Copilot — Structured Investment Note
+
+<!-- SCREENSHOT: Research Copilot tab — showing the investment note + structured JSON inputs -->
+![Research Copilot](assets/research_copilot.png)
+
+All agent outputs are assembled into a structured JSON context block, then synthesized into a 3-paragraph investment note that:
+- States the regime and what HMM confidence implies about market structure
+- Explicitly resolves the conflict between regime and quant signal
+- References the historical analog median forward return
+- States the desk action with specific exposure and primary risk factors
+
+---
+
+### Risk Lab — Portfolio Analytics
+
+<!-- SCREENSHOT: Risk Lab tab — showing equity curve + cost sensitivity chart -->
+![Risk Lab](assets/risk_lab.png)
+
+- Supervisor strategy vs buy-and-hold equity curve (walk-forward window)
+- Portfolio cost sensitivity: Sharpe vs transaction costs from 0–20 bps
+- Stress scenario calculator: if next session return = X, current exposure impact = Y
+
+---
+
+### Historical Analogs — Nearest Neighbor Regime Retrieval
+
+<!-- SCREENSHOT: Historical Analogs tab — showing the analog table with forward returns -->
+![Historical Analogs](assets/historical_analogs.png)
+
+Retrieves the closest historical market states using cosine similarity over:
+- Regime label
+- 30-day rolling volatility
+- Current drawdown
+- Asset-specific VIX level
+- Momentum
+
+Shows forward 10D and 30D returns from those analog periods, with median recovery days — providing empirical base rates for the current setup.
+
+---
+
+### Model Diagnostics — Full Leaderboard + Accuracy Breakdown
+
+<!-- SCREENSHOT: Model Diagnostics tab — showing leaderboard + accuracy by regime chart -->
+![Model Diagnostics](assets/model_diag.png)
+![Model Diagnostics](assets/model_diag2.png)
+
+| Model | Routing | Sharpe | Max DD | Accuracy |
+|---|---|---|---|---|
+| Random Forest | Soft MoE | **2.329** | -10.57% | 53.9% |
+| LightGBM | Soft MoE | 2.184 | -8.03% | 50.3% |
+| HistGradientBoosting | Soft MoE | 1.920 | -8.68% | 50.1% |
+| Random Forest | Baseline | 1.917 | -12.72% | 52.9% |
+| XGBoost | Soft MoE | 1.915 | -10.28% | 50.9% |
+
+Directional accuracy broken down by regime and recency window (Last 30 / 60 / 90 / Bull / Bear / Crisis).
+
+> Crisis accuracy is 28% — honestly reported. Crisis periods are rare (25 observations), non-stationary, and structurally different from Bull/Bear dynamics. This result is consistent with the academic literature on regime-switching model limitations during structural breaks.
+
+---
+
+## Assets
+
+| Asset | Ticker | VIX Proxy |
+|:---|:---:|:---:|
+| S&P 500 | `^GSPC` | `^VIX` |
+| NASDAQ | `^IXIC` | `^VIX` |
+| NIFTY 50 | `^NSEI` | `^INDIAVIX` |
+
+---
+
+## Notebook Pipeline
+
+| # | Notebook | Purpose |
+|:---:|:---|:---|
+| 01 | `01_download_market_data` | Download raw market data via Yahoo Finance |
+| 02 | `02_feature_engineering` | Returns, volatility, momentum, moving averages, drawdown |
+| 03 | `03_hmm_regime_detection` | HMM training and Bull / Bear / Crisis labeling |
+| 04 | `04_mixture_of_experts` | Return-regression MoE baseline |
+| 05 | `05_directional_moe_classifier` | Direction classification MoE |
+| 06 | `06_walk_forward_validation` | Walk-forward backtesting framework |
+| 07 | `07_final_research_report` | S&P 500 focused report |
+| 08 | `08_all_assets_boosted_experts` | All-asset RF / XGBoost / LightGBM comparison |
+| 09 | `09_final_all_asset_report` | Final multi-asset research report |
+| 10 | `10_transaction_costs_position_sizing` | Transaction costs + volatility-based position sizing |
+| 11 | `11_india_vix_macro_enrichment` | India VIX, FRED, RBI macro enrichment |
+| 12 | `12_advanced_regime_and_deep_models` | Research extensions: Markov-switching ARIMA, neural gating experiments |
+| 13 | `13_macro_enriched_hmm_moe` | HMM + MoE rerun with macro-enriched features |
+
+---
+
+## Tech Stack
+
+```
+Core ML          hmmlearn · scikit-learn · XGBoost · LightGBM
+Data             yfinance · pandas-datareader · FRED API
+Feature Eng.     pandas · NumPy
+Dashboard        Streamlit · Plotly
+Macro            FRED (FEDFUNDS · T10Y2Y · BAMLH0A0HYM2) · India VIX · RBI DBIE
+```
+
+---
+
+## Setup
 
 ```bash
+git clone https://github.com/Niyati001/Regime-Aware-Investment-Copilot.git
+cd Regime-Aware-Investment-Copilot
+
+py -3.11 -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # macOS / Linux
+
+pip install --upgrade pip
 pip install -r requirements.txt
-python scripts/detect_environment.py
-python -m pytest -q
 ```
 
-Without two GPUs, the project can exercise its plumbing through CPU/Gloo. Those runs are development checks, not GPU performance evidence.
+**Launch the dashboard:**
+```bash
+streamlit run app.py
+```
 
-### GPU experiments
+**Run notebooks:**
+```bash
+python -m ipykernel install --user --name market-regime --display-name "Python 3.11 Market Regime."
+jupyter lab
+```
 
-The measurement and campaign tooling is designed for a host with at least two GPUs. The reported GPU campaign was run in Kaggle on 2× Tesla T4.
+---
 
-See the public configurations under `configs/` and source modules under `instrument/`, `faults/`, and `diagnose/`.
+## Optional: FRED Macro Data
 
-## Limitations and next steps
+Get a free API key at [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html):
 
-A future version could evaluate real multi-node NCCL over a physical network fabric, real bandwidth controls, larger workloads with stronger overlap, CPU-contention-aware input signatures, and broader severity ladders.
+```bash
+# Windows
+setx FRED_API_KEY "your_key_here"
 
-Those are **future experiments**, not current results.
+# macOS / Linux
+export FRED_API_KEY="your_key_here"
+```
+
+The system fetches `FEDFUNDS`, `T10Y2Y`, and `BAMLH0A0HYM2` automatically.
+
+---
+
+## Optional: RBI Macro Data
+
+Export selected series from [RBI DBIE](https://dbie.rbi.org.in) as CSV into:
+
+```
+data/external/rbi_macro.csv
+```
+
+Expected columns: `Date, india_cpi, india_repo_rate, india_gdp_growth, india_10y_yield, usd_inr`
+
+---
+
+## Research Conclusions
+
+- Regime-aware routing consistently outperformed single-model baselines in walk-forward testing across all three assets
+- Soft-Gated MoE outperformed Hard MoE and baseline across every model family tested
+- Random Forest was the strongest expert classifier at Sharpe 2.329 — outperforming XGBoost (1.915) and LightGBM (2.184)
+- India VIX improved NIFTY-specific regime financial correctness; macro enrichment did not improve overall Sharpe on this dataset — an honest null result
+- Walk-forward Sharpe degrades from 2.33 in-sample to ~1.06 on recent NIFTY out-of-sample windows — the realistic live-trading expectation, reported transparently
+
+---
+
+<div align="center">
+
+*Research prototype. Not investment advice.*
+*Designed to demonstrate regime-aware decision support, explicit agent conflict resolution, and model-risk transparency.*
+
+</div>
