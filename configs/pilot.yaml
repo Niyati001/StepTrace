@@ -1,0 +1,35 @@
+# Milestone 1 pilot: is communication measurable, and in which configuration?
+# One launch per grid point; ddp and nosync blocks interleaved (ABBA) per repeat.
+# Grid follows spec §34 order: smaller batch, mixed precision (less compute per
+# gradient byte), then an alternative model with more gradient bytes.
+base:
+  experiment: {seed: 1}
+  workload: {dataset: synthetic, optimizer: sgd}
+  distributed: {bucket_cap_mb: 25}
+  measurement:
+    warmup_steps: 20
+    measured_steps: 50
+    repeats: 3
+    modes: [ddp, nosync]
+    profile: {enabled: false}
+
+grid:
+  - id: r18_b128_fp32
+    override: {workload: {model: resnet18, batch_size: 128, precision: fp32}}
+  - id: r18_b128_amp
+    override: {workload: {model: resnet18, batch_size: 128, precision: amp}}
+  - id: r18_b64_fp32
+    override: {workload: {model: resnet18, batch_size: 64, precision: fp32}}
+  - id: r18_b32_fp32
+    override: {workload: {model: resnet18, batch_size: 32, precision: fp32}}
+  - id: r18_b32_amp
+    override: {workload: {model: resnet18, batch_size: 32, precision: amp}}
+  - id: gpt_b8_fp32
+    override: {workload: {model: transformer_small, batch_size: 8, seq_len: 256, precision: fp32, optimizer: adamw, lr: 0.0003}}
+  - id: gpt_b8_amp
+    override: {workload: {model: transformer_small, batch_size: 8, seq_len: 256, precision: amp, optimizer: adamw, lr: 0.0003}}
+
+# Pre-registered selection rule (analysis/pilot.py, METHODOLOGY.md §Pilot).
+selection:
+  preferred_models: [resnet18, transformer_small]
+  target_fraction: 0.25

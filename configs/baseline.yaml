@@ -1,0 +1,12 @@
+# Milestone 1 baseline measurement settings.
+# The workload itself (model/batch/precision) is NOT fixed here: it is taken from
+# the pilot's selected grid point by scripts/run_baseline.py, so the baseline is
+# always the configuration the pre-registered pilot rule chose.
+experiment: {name: baseline, seed: 100}
+workload: {dataset: synthetic}
+measurement:
+  warmup_steps: 50
+  measured_steps: 200
+  repeats: 2          # x launches (run_baseline --launches 5) = 10 repeats per mode
+  modes: [ddp, nosync]
+  profile: {enabled: true, wait: 1, warmup: 3, active: 10}

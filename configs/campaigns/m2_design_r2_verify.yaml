@@ -1,0 +1,39 @@
+# M2 design revision 2: targeted GPU verification (NOT the full design campaign).
+# Question: does the redesigned data_fetch_sleep_lo produce a clean data_wait_ms shift
+# against a same-session healthy reference while leaving compute unchanged?
+# Role "design": these runs are rule-design data, never held-out data.
+name: m2_design_r2_verify
+seed: 30000
+workload_point: r18_b32_fp32
+base:
+  workload: {dataset: synthetic}
+  measurement:
+    warmup_steps: 30
+    measured_steps: 100
+    repeats: 3
+    modes: [ddp]
+    profile: {enabled: false}
+
+phases:
+  # Mandatory same-session healthy reference, collected before any fault (unchanged method).
+  - name: reference
+    role: reference
+    arms:
+      - id: healthy_ref
+        launches: 6
+        set: {measurement: {modes: [ddp, nosync]}}
+
+  - name: verify
+    role: design
+    arms:
+      - id: healthy_hostloader        # control: same host loader, no fault (valid in Session 1)
+        launches: 2
+        set: {workload: {dataset: synthetic_host, num_workers: 2}}
+      - id: data_fetch_sleep_lo       # the redesigned arm under test
+        launches: 2
+        set: {workload: {dataset: synthetic_host, num_workers: 2}}
+        fault: {mechanism: fetch_sleep, delay_ms: {rel_step: 0.10}, level: lo}
+      - id: data_loader_sleep_hi      # positive control (valid in Session 1): session sensitivity
+        launches: 2
+        set: {workload: {dataset: synthetic_host, num_workers: 2}}
+        fault: {mechanism: loader_sleep, delay_ms: {loader_rel: 0.35}, level: hi}

@@ -1,0 +1,67 @@
+# M2 Session 1: same-session healthy reference + rule-DESIGN fault set.
+# Workload = the M1 pilot selection (ResNet-18, batch 32/GPU, FP32, synthetic device data).
+# Held-out mechanisms (emulated_bandwidth, shm_disable, compute straggler, cpu_preprocess)
+# are deliberately ABSENT here; they are only run after the rules are frozen.
+#
+# Revision 2 (after the evidence audit of campaign m2_design-20261006-190523, Session 1):
+#  * REMOVED comm_small_batch: batch 32 -> 8 cut compute by ~15.6 ms while exposed
+#    communication changed by only ~0.02 ms. The rise in communication FRACTION was a
+#    ratio effect (less compute, same communication), not a demonstrated communication
+#    fault, so it is a confound and cannot be used to design the COMMUNICATION rule.
+#  * REDESIGNED data_loader_sleep_lo -> data_fetch_sleep_lo: the worker-side delay
+#    (~78.8 ms per batch, 2 workers) added only ~0.38 ms of data wait. loader_sleep is
+#    rate-based (wait ~ delay/workers - inter-batch period); at a 10 % margin, prefetching
+#    and the unmeasured host gap between steps absorbed it. fetch_sleep puts a
+#    deterministic delay on the training process after the prefetched batch arrives, so
+#    the expected added data wait is delay_ms itself. data_loader_sleep_hi (35 % margin)
+#    was valid and is unchanged.
+#  * All other arms, the reference phase and the measurement settings are unchanged.
+name: m2_design
+revision: 2
+seed: 20000
+workload_point: r18_b32_fp32
+base:
+  workload: {dataset: synthetic}
+  measurement:
+    warmup_steps: 30
+    measured_steps: 100
+    repeats: 3            # 3 blocks per launch -> per-block diagnosis -> agreement k/3
+    modes: [ddp]
+    profile: {enabled: false}
+
+phases:
+  # A. Healthy reference: collected BEFORE any fault injection, preserved as raw runs.
+  #    ddp + nosync so exposed communication is re-measured by both methods (timeline + ablation).
+  - name: reference
+    role: reference
+    arms:
+      - id: healthy_ref
+        launches: 6
+        set: {measurement: {modes: [ddp, nosync]}}
+
+  # B. Design set: signatures used to design the rules (in-sample by definition).
+  - name: design
+    role: design
+    arms:
+      - id: healthy_repeat            # same config, new seeds: within-session false-positive check
+        launches: 2
+      - id: healthy_hostloader        # healthy, but host DataLoader (H2D copies, 2 workers): must stay HEALTHY
+        launches: 2
+        set: {workload: {dataset: synthetic_host, num_workers: 2}}
+      - id: comm_single_bucket        # real config: one 1024 MB bucket -> no compute/comm overlap
+        launches: 2
+        fault: {mechanism: single_bucket, bucket_mb: 1024}
+      - id: straggler_sleep_lo        # rank 1 sleeps ~10 % of the healthy step before forward
+        launches: 2
+        fault: {mechanism: sleep, rank: 1, delay_ms: {rel_step: 0.10}, level: lo}
+      - id: straggler_sleep_hi
+        launches: 2
+        fault: {mechanism: sleep, rank: 1, delay_ms: {rel_step: 0.35}, level: hi}
+      - id: data_fetch_sleep_lo       # rev 2: synchronous fetch delay of ~10 % of a step on the
+        launches: 2                   # training process; same host loader as healthy_hostloader
+        set: {workload: {dataset: synthetic_host, num_workers: 2}}
+        fault: {mechanism: fetch_sleep, delay_ms: {rel_step: 0.10}, level: lo}
+      - id: data_loader_sleep_hi
+        launches: 2
+        set: {workload: {dataset: synthetic_host, num_workers: 2}}
+        fault: {mechanism: loader_sleep, delay_ms: {loader_rel: 0.35}, level: hi}
