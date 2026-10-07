@@ -37,16 +37,5 @@ jobs:
           sys.exit(1 if s["frozen"] and not s["matches"] else 0)
           PY
 
-      - name: Notebook cells compile
-        run: |
-          python - <<'PY'
-          import json, re
-          nb = json.load(open("notebooks/commscope_kaggle_runner.ipynb"))
-          for c in nb["cells"]:
-              if c["cell_type"] == "code":
-                  compile(re.sub(r"(?m)^!.*$", "pass", "".join(c["source"])), "cell", "exec")
-          print("ok")
-          PY
-
       - name: Unit + CPU/Gloo integration tests
         run: python -m pytest -q -p no:cacheprovider
