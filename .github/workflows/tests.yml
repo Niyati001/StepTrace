@@ -1,0 +1,52 @@
+name: tests (CPU)
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # provenance tests use real git history
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install (CPU PyTorch; no GPU, no CUDA, no NCCL)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+
+      - name: Static checks
+        run: python -m pyflakes analysis diagnose faults instrument optimize scripts tools workloads tests
+
+      - name: Frozen-rule integrity (fails if rule files drift from a committed frozen record)
+        run: |
+          python - <<'PY'
+          import sys; sys.path.insert(0, ".")
+          from diagnose.diagnose import frozen_status
+          s = frozen_status()
+          print(s)
+          sys.exit(1 if s["frozen"] and not s["matches"] else 0)
+          PY
+
+      - name: Notebook cells compile
+        run: |
+          python - <<'PY'
+          import json, re
+          nb = json.load(open("notebooks/commscope_kaggle_runner.ipynb"))
+          for c in nb["cells"]:
+              if c["cell_type"] == "code":
+                  compile(re.sub(r"(?m)^!.*$", "pass", "".join(c["source"])), "cell", "exec")
+          print("ok")
+          PY
+
+      - name: Unit + CPU/Gloo integration tests
+        run: python -m pytest -q -p no:cacheprovider
