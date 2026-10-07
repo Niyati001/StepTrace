@@ -1,4 +1,12 @@
-# Local experiment artifacts
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Local data / generated artifacts
+data/
+dist/
 results/
 
 # Internal development documentation
@@ -6,3 +14,8 @@ BUILDER_GUIDE.md
 INTERVIEW_GUIDE.md
 CommScope_Master_Build_Spec.md
 DECISIONS.md
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
