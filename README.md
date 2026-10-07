@@ -1,211 +1,165 @@
-# StepTrace
+# StepTrace | Distributed Training Performance Diagnosis
 
-### StepTrace | Distributed Training Performance Diagnosis
+> **Measure → Understand → Inject → Diagnose → Validate**
 
-> **Naming note:** StepTrace was developed under the working name *CommScope*. Historical records keep the old name where it is part of the factual record: the build spec filename, the Kaggle bundle/notebook filenames (`commscope.bundle`, `commscope_kaggle_runner.ipynb`), the `COMMSCOPE_*` environment variables, and recorded evidence, campaign ids, hashes and git history.
+StepTrace is an auditable PyTorch distributed-training performance testbed. It measures where a DDP training step spends its time, injects controlled faults with known ground truth, diagnoses the resulting signature with frozen rule-based logic, and evaluates that logic on data it never saw during rule development.
 
-**Measure where a distributed training step actually goes, inject known faults, and diagnose them with frozen, auditable rules, then check that diagnosis on data the rules never saw.**
+![StepTrace architecture](docs/assets/architecture.png)
 
-> **Scope, stated up front.** Everything here was measured on **one node with 2× NVIDIA Tesla T4** (Kaggle).
-> The GPUs talk through NCCL's **`SHM/direct`** transport (host shared memory over PCIe, topology `PHB`, no NVLink).
-> There is **no network fabric** in this project: no NIC, InfiniBand, RoCE or multi-node run. Bandwidth throttling
-> is **emulated** and labelled as such. Every number is specific to the recorded environment.
+## Scope
 
-<p align="center">
-  <img src="results/plots/m2_heldout/03_time_breakdown.png" width="78%" alt="Where a healthy DDP step goes"><br>
-  <sub>Healthy ResNet-18 step on 2×T4 (held-out session reference): 37.3 ms, of which ≈4 ms is exposed communication on the critical path. Source: <code>results/plots/m2_heldout/03_time_breakdown.png</code>.</sub>
-</p>
+All GPU evidence was measured on **one node with 2× NVIDIA Tesla T4 GPUs in Kaggle**. Collectives used NCCL `SHM/direct` transport over the host/PCIe path; topology was `PHB` and there was no NVLink.
+
+This is **not** a multi-node network-fabric study. There are no InfiniBand, RoCE, NIC, switch, or production-cluster measurements. Communication bandwidth degradation is explicitly **emulated** unless stated otherwise. Reported performance numbers are specific to the recorded environment.
 
 ## The problem
 
-A data-parallel training step can be slow for very different reasons, and the usual dashboard number ("step time went up") says nothing about which one:
+A slow distributed step does not tell you *why* it is slow.
 
-| symptom | real cause | what you would "fix" |
+| Observable symptom | Possible cause | What to investigate |
 |---|---|---|
-| gradient all-reduce not hidden behind backward | **communication** (bucketing, transport, bandwidth) | DDP buckets, topology, fabric |
-| one rank finishes compute late, the rest wait in the collective | **straggler** (rank imbalance) | the slow rank, not the network |
-| GPU idle at the start of the step | **data stall** (input pipeline) | loader workers, prefetch, preprocessing |
+| Collective communication reaches the critical path | Communication | DDP buckets, transport, overlap |
+| One rank finishes compute late | Straggler | Slow rank / workload imbalance |
+| GPU waits for the next batch | Data stall | Loader workers, preprocessing, prefetch |
+| Several signatures appear together | Ambiguous contention | Common-mode CPU/input effects |
 
-Because DDP is synchronous, a straggler or a data stall shows up as **waiting inside the collective**, which looks exactly like a slow network. Misattribution is the expensive part: you tune the wrong layer. StepTrace is a small, rigorous testbed for telling these apart from *measurements*, and for being honest about when it cannot.
+Because DDP is synchronous, a straggler or input stall can surface as waiting around collectives and look like a communication problem. StepTrace measures those signatures separately—and reports when they are not cleanly separable.
 
 ## What StepTrace does
 
-```mermaid
-flowchart LR
-    A[Instrumented DDP training<br/>CUDA events + comm hook] --> B[Per-step, per-rank<br/>raw records]
-    B --> C[Fault injection<br/>10 mechanisms, ground truth<br/>stored separately]
-    B --> D[Same-session healthy<br/>reference]
-    D --> E[Robust-z thresholds<br/>K=4 + practical floor]
-    B --> F[Diagnoser: 3 features,<br/>explicit rules]
-    E --> F
-    F --> G[Verdict + evidence<br/>HEALTHY / COMM / STRAGGLER / DATA_STALL]
-    C -. scoring only .-> H[Held-out evaluation<br/>frozen rules, hash-checked]
-    G --> H
-    H --> I[Manifestation check +<br/>failure analysis]
-```
+- Measures per-rank step timing with **CUDA events**.
+- Timestamps DDP gradient buckets with a **communication hook**.
+- Cross-checks timing with `torch.profiler`.
+- Uses a paired `no_sync` ablation as an independent communication-exposure estimate.
+- Injects controlled **communication, straggler, and data-pipeline faults** with ground truth.
+- Builds thresholds from a healthy reference collected in the **same GPU session**.
+- Uses an explicit rule-based diagnoser; **no ML or LLM is used for diagnosis**.
+- Freezes and hashes the rules before held-out scoring.
+- Separates **fault manifestation** from diagnosis.
+- Records provenance and verifies ingested evidence with SHA256 manifests.
 
-1. **Measures** each step per rank on the GPU timeline (CUDA events, a timing comm hook, a `no_sync` ablation, a `torch.profiler` cross-check).
-2. **Injects** controlled faults with ground truth recorded apart from measurements.
-3. **Diagnoses** with an explicit rule set (no ML, no LLM): three robust-z features against a healthy reference collected **in the same GPU session**.
-4. **Freezes** the rules (hash-recorded, git-tagged) **before** any held-out data exists, then scores held-out data once.
-5. **Audits itself**: an independent "did the fault actually act?" check, provenance on every run, SHA256-verified evidence, and a post-hoc failure analysis.
+## Key result
 
-## Headline result: 73.9 % held-out accuracy (17/23), reported as-is
+### 73.9% held-out accuracy — 17 / 23
 
-Pre-registered held-out campaign `m2_heldout-20261007-053125`, run from clean code `dc3f5db`, **rules frozen at v1** (file sha256 `f7fae790…ba88`). 23 headline runs; no run failed to manifest.
+![Held-out confusion matrix](docs/assets/confusion_matrix.png)
 
-<p align="center"><img src="results/plots/m2_heldout/07_confusion_matrix.png" width="46%" alt="Held-out confusion matrix"></p>
+| Truth | Correct | Recall |
+|---|---:|---:|
+| HEALTHY | 5 / 5 | 1.00 |
+| COMMUNICATION | 4 / 6 | 0.67 |
+| STRAGGLER | 5 / 6 | 0.83 |
+| DATA_STALL | 3 / 6 | 0.50 |
 
-| truth \ predicted | HEALTHY | COMMUNICATION | STRAGGLER | DATA_STALL | recall |
-|---|---:|---:|---:|---:|---:|
-| HEALTHY (5) | **5** | 0 | 0 | 0 | 1.00 |
-| COMMUNICATION (6) | 2 | **4** | 0 | 0 | 0.67 |
-| STRAGGLER (6) | 1 | 0 | **5** | 0 | 0.83 |
-| DATA_STALL (6) | 0 | 0 | 3 | **3** | 0.50 |
-| **precision** | 0.62 | 1.00 | 0.62 | 1.00 | **0.739** |
+With only two launches per fault arm, per-class statistics have limited statistical power.
 
-The set was built to be hard on purpose. Split by what the rules had seen during design (derived from the recorded per-run rows):
+The held-out set was intentionally difficult: **9/9** healthy/design-mechanism controls were correct, while **8/14** mechanisms not seen before the freeze were correct. That gap is part of the result.
 
-| held-out subset | correct |
-|---|---:|
-| healthy controls + design mechanisms at **unseen severities** (healthy ×5, `straggler_sleep_mid` ×2, `data_loader_sleep_mid_v2` ×2) | **9 / 9** |
-| **mechanisms never run before the freeze** (emulated bandwidth, SHM-disable, compute straggler, CPU-preprocess stall) | **8 / 14** |
+## Where a healthy DDP step goes
 
-In-sample design accuracy was 1.00 (n = 20 and n = 12); the held-out number is the honest estimate, and the gap is the point of holding data out. With 2 launches per arm the confidence interval is wide; treat per-class figures as indicative only.
+![Healthy step](docs/assets/healthy_step.png)
 
-### Per-arm held-out outcomes
+For the held-out reference session, a healthy ResNet-18 FP32 batch-32/GPU step had a median step time of **37.3 ms**, with approximately **4 ms of exposed communication on the critical path**.
 
-| arm (2 launches each unless noted) | mechanism | diagnosed | verdict |
-|---|---|---|---|
-| healthy_fresh (3), healthy_hostloader | none | HEALTHY | 5/5 ✔ |
-| comm_emulated_bw_4GBps | emulated bandwidth | COMMUNICATION | 2/2 ✔ |
-| comm_shm_disable | real NCCL transport change | COMMUNICATION | 2/2 ✔ |
-| **comm_emulated_bw_8GBps** | emulated bandwidth | HEALTHY | **0/2 ✘** |
-| straggler_compute_hi, straggler_sleep_mid | GPU work / host sleep on rank 1 | STRAGGLER | 4/4 ✔ |
-| **straggler_compute_lo** | extra GPU work, low | STRAGGLER, HEALTHY | **1/2** |
-| data_loader_sleep_mid_v2 | worker-side stall | DATA_STALL | 2/2 ✔ |
-| **data_cpu_preprocess_lo** | real CPU work in loader workers | STRAGGLER | **0/2 ✘** |
-| **data_cpu_preprocess_hi** | real CPU work in loader workers | DATA_STALL, STRAGGLER | **1/2** |
-| comm_small_batch_x2 *(marginal arm, excluded from headline)* | batch 32→16 | COMMUNICATION | 2/2 |
+## Why the diagnoser missed 6 runs
 
-<p align="center"><img src="results/plots/m2_heldout/08_heldout.png" width="95%" alt="Held-out runs: expected vs diagnosed"></p>
+![Failure analysis](docs/assets/failure_analysis.png)
 
-## The failures are findings, not noise
+The misses were not discarded or retuned away.
 
-A post-hoc analysis (read-only, no rescoring, rules untouched; [`FAILURE_ANALYSIS.md`](results/analysis/m2_heldout_failure_analysis/FAILURE_ANALYSIS.md)) recomputed the diagnoser's features from raw steps with independent code (max difference **0.0**) and found **no implementation bug**. The 6 misses fall into two causes:
+**Severity boundary — 3 misses.** Two `comm_emulated_bw_8GBps` runs and one low-severity compute-straggler run fell close to the frozen detection boundary. The communication signal was elevated, but too little of the injected delay became exposed critical-path time to satisfy the practical detection floor consistently.
 
-**1. Severity boundary (3 misses): `comm_emulated_bw_8GBps` ×2, `straggler_compute_lo` ×1.**
-The 8 GB/s signal is statistically unmistakable (robust z ≥ 20 in 6/6 blocks) yet only **+1.03…1.13 ms** of the injected 5.59 ms is *exposed* (the rest hides behind backward). The practical floor (3 % of step) is 1.118 ms, so 5 of 6 blocks fall just under it. The low compute straggler had a 1.5–2.4 ms effect against a requirement of z ≥ 4 and ≥ 1.12 ms; the injected GPU work was realized at well under its calibrated size.
+**Observable ambiguity — 3 misses.** CPU-heavy loader preprocessing competed with the four available vCPUs. That increased both input wait and per-rank compute unevenly. One physical cause therefore produced both a **DATA_STALL** and **STRAGGLER** signature. The frozen rule selected the larger observed effect.
 
-**2. Observable ambiguity (3 misses): `data_cpu_preprocess` lo ×2, hi ×1 → called STRAGGLER.**
-CPU-heavy loader workers share 4 vCPUs with the training processes. One physical cause produces **two** signatures: the loader delivers late (host wait) **and** the training processes slow down unevenly (per-rank compute +47…86 %, skew 4–18 ms). DATA_STALL was elevated in **12/12** blocks and reported as the *secondary* cause every time; the frozen rule names whichever effect is larger, and that was compute skew. A real CPU-bound input pipeline can look like a straggler to any skew-based detector.
+These are findings about the detector, not reasons to change the held-out score.
 
-<p align="center"><img src="results/plots/m2_heldout/04_fault_signatures.png" width="95%" alt="Fault signatures vs healthy"></p>
+## Measurement model
 
-## Measurement: what is actually timed
-
-Per step and per rank, on the **device timeline** (CUDA events resolved after one `synchronize` per step; host clocks would only measure kernel *launch*):
-
-| metric | meaning |
+| Metric | Meaning |
 |---|---|
-| `step_time_ms` | `opt_end − start` |
-| `data_wait_ms` | GPU idle while the host obtains the batch (+ H2D copy) |
-| `compute_time_ms` | accumulation + forward + backward-to-last-gradient + optimizer |
-| `communication_time_ms` | all-reduce busy time, hidden or not |
-| `exposed_communication_time_ms` | `max(0, end_last_collective − grads_ready)`: communication on the critical path |
-| `ddp_finalize_ms` | DDP's post-communication work |
+| `step_time_ms` | End-to-end measured training step |
+| `data_wait_ms` | GPU-side wait for batch delivery / H2D |
+| `compute_time_ms` | Accumulation + forward + backward-to-last-gradient + optimizer |
+| `communication_time_ms` | DDP all-reduce busy time |
+| `exposed_communication_time_ms` | Communication on the critical path |
+| `ddp_finalize_ms` | Post-communication DDP work |
+| `compute_skew_ms` | Cross-rank compute imbalance |
 
-* A **DDP comm hook** timestamps every gradient bucket (`ready_k` on the compute stream, `end_k` inside the future callback); a collective's true start is `max(ready_k, end_{k−1})` because one process group runs collectives serially. Physically impossible orderings are counted and gated, not clamped.
-* **Two independent exposed-communication estimates**: the per-step timeline, and a paired **`no_sync` ablation** (`median(DDP step) − median(no_sync step)`), which also captures interference and bucket-copy costs. In the held-out session reference the ablation was **7.91 ms** against ≈3.6 ms timeline exposure on the last bucket: both are reported, and the gap is information.
-* A **`torch.profiler` window** cross-checks the hook against NCCL kernel intervals. Pre-registered **validation gates** (decomposition closes, causality, bytes = gradient bytes, hook overhead ≤ 3 %, …) must pass in every session.
+Two independent communication-exposure views are retained: a critical-path timeline and paired `DDP − no_sync` ablation. A profiler window provides an additional kernel-level cross-check.
 
-Workload (chosen by a pre-registered pilot rule, not by taste): **ResNet-18, batch 32/GPU, FP32, synthetic device-resident data**: 44.7 MB of gradients, a communication-relevant regime on this hardware (collective bus bandwidth plateaus near 4 GB/s through host shared memory).
+## Diagnosis
 
-## Diagnosis: deliberately simple
+The frozen v1 diagnoser uses robust-z thresholds against a same-session healthy reference:
 
-| class | rule (per block, then majority over blocks) |
-|---|---|
-| DATA_STALL | `data_wait_ms` elevated |
-| STRAGGLER | `compute_skew_ms` = max − min rank compute, elevated |
-| COMMUNICATION | `exposed_min_ms` (the **minimum** over ranks, so straggler wait does not leak in) or its fraction elevated |
-| HEALTHY | nothing elevated |
+- **DATA_STALL** → elevated input wait
+- **STRAGGLER** → elevated cross-rank compute skew
+- **COMMUNICATION** → elevated exposed communication
+- **HEALTHY** → none elevated
 
-*Elevated* ⇔ robust z = (x − median_ref) / max(1.4826·MAD, 1 %·median, abs floor) **≥ 4** *and* delta ≥ practical floor (3 % of the healthy step, or 3 pp for fractions). Several elevated: the primary cause is the larger estimated critical-path ms; others are listed as secondary. "Confidence" is rule agreement across blocks (e.g. 3/3), **not a probability**. Every verdict carries a reason string with value, reference, delta, z and thresholds.
+A signal must satisfy both its robust z-score and practical-effect threshold. When multiple causes are elevated, the primary verdict is the larger estimated critical-path effect; secondary causes remain evidence.
 
-**Why not ML / an LLM?** At this sample size (tens of runs) a learned model would be unauditable and easy to overfit; explicit rules can be frozen, hashed, and every miss traced to a feature and a threshold, as the failure analysis above does.
+The rules were frozen before held-out scoring and were not refit after seeing the held-out failures.
 
-## Experimental integrity (the part most projects skip)
+## Experimental integrity
 
-* **Same-session healthy reference.** Cloud GPUs differ between sessions, so thresholds are recomputed from healthy runs collected *before any fault in the same session*.
-* **Design → freeze → held-out.** Rules were derived from design evidence only; `diagnose.freeze` writes `diagnose/frozen/rules_v1.json` (hashes of rule files and manifestation criteria, constants, design-evidence hashes) and **refuses** if the tree is dirty, evidence is unverified, or any held-out data already exists. The evaluator refuses held-out scoring unless the file hash and the current rule files match. Tag: `evaluation-rules-frozen`.
-* **Manifestation is separate from diagnosis.** An independent check (`faults/manifestation.py`, also frozen) asks whether an injected mechanism acted at all; a run that slowed down but was misdiagnosed is always a miss, never excused.
-* **Audits before the freeze.** The design evidence audit found and fixed a mis-specified loader-stall manifestation check (median under-reported a bimodal wait) *before* freezing; weak design arms (`comm_small_batch`, `data_loader_sleep_lo`) were replaced with documented reasons ([`DECISIONS.md`](DECISIONS.md)).
-* **Provenance.** Every run records git SHA, clean/dirty state, config, environment, seed and timestamps; every launcher refuses to run from a dirty tree; code reaches Kaggle as a verified `git bundle`; raw evidence is ingested with SHA256 manifests and never overwritten.
-* **CI:** CPU-only GitHub Actions (pyflakes, frozen-rule integrity, notebook compile, unit and Gloo integration tests). Last recorded full local run: 116 passed, 1 failed (`test_optimize.py::test_tuning_to_validation_workflow`, cause not investigated), 3 not run (`test_train_gloo.py`).
+- Same-session healthy references account for variation in cloud GPU performance.
+- Rules are frozen, hash-recorded, and tied to Git provenance.
+- Every run records configuration, environment, seed, timestamp, Git state, and fault ground truth.
+- Fault manifestation is checked independently from diagnosis.
+- Raw evidence is ingested with SHA256 verification.
+- Held-out failures were analyzed independently without rescoring or changing the frozen rules.
+- CPU/Gloo tests provide GPU-independent regression coverage.
 
-## Fault taxonomy
+## What this project does **not** claim
 
-| class | mechanism | nature |
-|---|---|---|
-| COMMUNICATION | `single_bucket` (one 1 GB bucket, no overlap), `small_batch`, `emulated_bandwidth`, `shm_disable` (NCCL SHM/P2P off) | real config / **emulated** / real transport |
-| STRAGGLER | `sleep` (host), `compute` (calibrated GPU matmuls) on rank 1 | injected delay / real work |
-| DATA_STALL | `loader_sleep`, `fetch_sleep`, `cpu_preprocess` | injected delay / real CPU work |
+StepTrace does **not** claim:
 
-## What this does and does not support
+- multi-node performance results;
+- InfiniBand/RoCE/NVSwitch/NVLink performance;
+- production-scale training behavior;
+- generalization to other GPU families or arbitrary models;
+- that emulated bandwidth delay represents a real slow network link;
+- statistically strong confidence intervals from two launches per held-out arm;
+- GPU optimization speedups.
 
-**Supported by recorded evidence:** a reproducible method for decomposing a DDP step on this setup; a frozen rule set whose held-out accuracy is **0.739 on n = 23** (9/9 on healthy and design-mechanism controls, 8/14 on unseen mechanisms); documented, evidence-backed reasons for each miss.
+An optimization layer exists and is CPU-tested, but **no GPU optimization campaign was run**, so no speed-up is reported.
 
-**Not supported / not claimed:**
-* Anything about multi-node training, InfiniBand/RoCE, NVLink/NVSwitch, other GPUs or models, or production workloads.
-* That `emulated_bandwidth` represents a real slow link; it is a spin-kernel delay.
-* Generalization beyond 2 launches per held-out arm; no confidence intervals are claimed.
-* Optimization gains. An optimization layer (`optimize/`: tuning → fresh-session validation → correctness gate) is implemented and CPU-tested, but **no GPU optimization campaign has been run, so no speed-up is reported.**
-* M1 headline numbers (ablation 7.08 ms, 18.2 % of the step, ResNet-18 b32 selection) are **historical**: their raw artifacts were lost and they are not used as evidence anywhere.
+## Repository
 
-See [`LIMITATIONS.md`](LIMITATIONS.md) for the full list.
-
-## Roadmap to real infrastructure (not done)
-Multi-node NCCL over a real fabric with per-link counters; real bandwidth limits (`tc`/switch QoS) to replace emulation; larger models with realistic overlap; a CPU-contention-aware data-stall signature (e.g. using common-mode compute inflation, evaluated as a **new** frozen rule version on fresh design and held-out data); severity ladders to map detection thresholds. Details in [`BUILDER_GUIDE.md`](BUILDER_GUIDE.md).
-
-## Repository map
-
+```text
+workloads/    instrumented DDP workload, models, data/config schema
+instrument/   CUDA timing, communication hooks, timelines, profiler, provenance
+faults/       fault taxonomy, runtime injectors, manifestation checks
+diagnose/     features, thresholds, rules, evaluation, freeze logic
+analysis/     statistics, validation gates, pilot selection, plots
+optimize/     tuning/validation framework (CPU-tested)
+scripts/      experiment and validation tooling
+configs/      baseline, pilot, and public design campaign configurations
+tests/        CPU-only unit and Gloo integration tests
 ```
-workloads/   instrumented DDP loop (train.py), models, data sources, config schema
-instrument/  step_timer (CUDA events), comm_hook, timeline (metric derivation), profiler,
-             gpu_metrics, nccl_log, environment, provenance, evidence, schema
-faults/      spec.py (taxonomy + ground truth), runtime.py (injectors), manifestation.py
-diagnose/    features.py, thresholds.py, rules.py, diagnose.py, evaluate.py, freeze.py, frozen/rules_v1.json
-analysis/    summary (statistics), validation (gates), pilot (selection), plots (8 evidence plots)
-optimize/    search.py, report.py, metrics.py   (CPU-verified; no GPU results yet)
-scripts/     run_campaign.py, audit_campaign.py, analyze_heldout_failures.py, make_kaggle_bundle.py, ...
-configs/     pilot/baseline + campaigns/ (m2_design, m2_design_r2_verify, m2_heldout, m3_tuning)
-results/     session1, session1b_verify, heldout (ingested evidence), analysis/, plots/
-tests/       CPU-only unit + Gloo integration tests
-```
+
+Generated experiment evidence and internal development guides are intentionally **not part of the public repository**.
 
 ## Quickstart
 
+### CPU development
+
 ```bash
-pip install -r requirements.txt                 # locally: CPU torch from download.pytorch.org/whl/cpu
-python scripts/detect_environment.py            # what hardware is here
-python -m pytest -q                             # CPU-only tests (a few are slow)
-
-# GPU host with ≥ 2 GPUs (Kaggle 2×T4): see notebooks/commscope_kaggle_runner.ipynb
-python scripts/make_kaggle_bundle.py            # clean tree only -> dist/commscope.bundle
-python scripts/run_campaign.py --campaign configs/campaigns/m2_design.yaml
-
-# score (held-out requires the frozen record and its exact hash)
-python -m diagnose.evaluate --manifest <campaign>/manifest.json --roles heldout \
-    --frozen-rules diagnose/frozen/rules_v1.json \
-    --frozen-rules-sha256 f7fae7907bb4985b5951ad7f89de61281e38fe4d00d802b78141bb21750dba88 \
-    --marginal-arms comm_small_batch_x2
-
-# regenerate the evidence plots and the failure analysis from the ingested held-out evidence
-python -m analysis.plots --campaign results/heldout/campaigns/m2_heldout-20261007-053125/manifest.json \
-    --evaluation results/heldout/campaigns/m2_heldout-20261007-053125/evaluation_heldout.json --out results/plots/m2_heldout
-python scripts/analyze_heldout_failures.py
+pip install -r requirements.txt
+python scripts/detect_environment.py
+python -m pytest -q
 ```
-Without 2 GPUs the scripts fall back to 2 CPU processes over Gloo and write to `results/dev/`; those are plumbing checks, never results. `COMMSCOPE_ALLOW_DIRTY=1` is a development-only override that is recorded in the run.
 
-## Documentation
-[`BUILDER_GUIDE.md`](BUILDER_GUIDE.md) (deep walkthrough, Hinglish) · [`INTERVIEW_GUIDE.md`](INTERVIEW_GUIDE.md) · [`METHODOLOGY.md`](METHODOLOGY.md) · [`EXPERIMENTS.md`](EXPERIMENTS.md) · [`DECISIONS.md`](DECISIONS.md) · [`LIMITATIONS.md`](LIMITATIONS.md)
+Without two GPUs, the project can exercise its plumbing through CPU/Gloo. Those runs are development checks, not GPU performance evidence.
+
+### GPU experiments
+
+The measurement and campaign tooling is designed for a host with at least two GPUs. The reported GPU campaign was run in Kaggle on 2× Tesla T4.
+
+See the public configurations under `configs/` and source modules under `instrument/`, `faults/`, and `diagnose/`.
+
+## Limitations and next steps
+
+A future version could evaluate real multi-node NCCL over a physical network fabric, real bandwidth controls, larger workloads with stronger overlap, CPU-contention-aware input signatures, and broader severity ladders.
+
+Those are **future experiments**, not current results.
