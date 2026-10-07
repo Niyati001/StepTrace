@@ -1,0 +1,49 @@
+{
+  "code_git_sha": "4ab2b942645336e7b4737b6d0e2f1c462a71a790",
+  "constants": {
+    "K_ROBUST_Z": 4.0,
+    "MIN_REFERENCE_BLOCKS": 6,
+    "PRACTICAL_FRACTION_PP": 0.03,
+    "PRACTICAL_STEP_FRACTION": 0.03,
+    "SCALE_FLOOR_ABS": {
+      "comm_GBps": 0.01,
+      "comm_busy_ms": 0.05,
+      "compute_ms": 0.05,
+      "compute_skew_ms": 0.05,
+      "data_wait_ms": 0.05,
+      "exposed_min_frac": 0.002,
+      "exposed_min_ms": 0.05,
+      "step_ms": 0.05
+    },
+    "SCALE_FLOOR_REL": 0.01
+  },
+  "design_evidence": [
+    {
+      "campaign_ids": [
+        "m2_design-20261006-214413"
+      ],
+      "path": "results/session1",
+      "sha256sums_sha256": "5e72eb5a1fb70a17c0a897acb67f81d797aabeb7f95b29a674f33c47c06f6b0e"
+    },
+    {
+      "campaign_ids": [
+        "m2_design_r2_verify-20261006-211958"
+      ],
+      "path": "results/session1b_verify",
+      "sha256sums_sha256": "81a09638ed113857d4cc6d84172d481894d2cf0a0e1a8c130fec51a4720c40cf"
+    }
+  ],
+  "frozen_utc": "2026-10-07T05:17:48Z",
+  "manifestation_files": {
+    "faults/manifestation.py": "d2dc8a7721c764ffb6c4c46e9f3d6c74ca533394fa651e1b29a7bd05607b4585",
+    "scripts/audit_campaign.py": "98cf0e1f0db9120c3abfa13460667619ee1fc69a64e5922fea46a7aedb07bccd"
+  },
+  "rule_files": {
+    "diagnose/features.py": "b93500b4e5d06d389fc781a958502ba5caa183177cb37c7256086e9b7159c1e9",
+    "diagnose/rules.py": "fd2ee1d3721f61c97ebb6845ba223c0e49d4324c29c9996ae3669696ead36cc6",
+    "diagnose/thresholds.py": "87bac00ece883d86139a082c9bd5ce8ddc5e258d84e2ddbd91cdbf952fb702e6"
+  },
+  "rules_sha256": "48aae18bd93c16f837ff50b8b138c9dbc55b5cfe4211d06b7e0e205a0aefc871",
+  "statement": "Thresholds and rules derived from design evidence only; frozen before any held-out execution. Held-out data must not influence thresholds, rule logic or mechanism selection after this point.",
+  "version": "v1"
+}
